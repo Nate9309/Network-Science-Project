@@ -1,4 +1,1 @@
-Corporate Boards Norway.Rmd linguist-detectable=true
-
-Corporate Boards Norway.html linguist-detectable=false
-bibliography.bib linguist-detectable=false
+*.html linguist-language=RMarkdown
