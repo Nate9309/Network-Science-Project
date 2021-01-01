@@ -1,0 +1,776 @@
+---
+title: "DSBA 6520 Project - Corporate Boards in Norway"
+date: "11/21/2020"
+output: html_document
+bibliography: bibliography.bib
+
+---
+
+# Introduction
+
+The goal of this project is to use the tools of Network Science to explore the connections between public limited companies and directors in Norway over the span of 9 years. The analysis will have two types of nodes: **companies** and **directors**. I will begin by creating graph objects for companies, where the companies are the nodes and there is an undirected edge between two companies if those companies share a director during a given period. Then I will create graph objects for directors, where each individual director is a node and there exists an undirected edge between two directors if they sit on the board of a given company for a given period.
+
+The dataset used is based off a paper by @RN1 where they explored Norwegian gender representation law . In their study they tried to understand how an affirmative action law passed in Norway in December 2003 has helped improve the representation of women in Norwegian public limited companies. The data simply gives the characteristics of the directors, companies,and a list of companies and their directors for every month from May 2002 to August 2011. [You can find the full dataset here.](http://www.boardsandgender.com/data.php)
+
+The goal is to visualize how network metrics such as mean degree, edge density, graph diameter, and assortativity by gender and region evolve over the 9 years. The individual graphs for each month are quite sparse and uninteresting i.e. most companies don't share directors. Part of this is because there are limits to how many boards an individual can serve on at a given time. So, in addition to tracting changes over the individual months, I will include two final *"super graphs"* that will combine data from all nine years (112 months) i.e. there is an undirected edge between two companies if there exists an individual who has served on the boards of both companies over the nine year period. The final graphs should have a much richer substructure.
+
+This notebook shows the entire process from data preparation right down to the final results. 
+
+**Software:** R v3.6 [RStudio Version 1.2.5001]
+
+**Network Package:** igraph
+
+[You can find a detailed tutorial of the `igraph` package here](https://kateto.net/netscix2016.html)
+
+
+```{r SetUp, warning=FALSE, include=FALSE, messages=FALSE}
+rm(list = ls())
+pkgs <- c("igraph", "stringi", "ggplot2", "reshape", "dplyr")
+
+pkgInstall <- Vectorize( function(x){
+  # checks if package already installed, if not it installs the package
+  if(! x %in% installed.packages()[,"Package"]) install.packages(x)
+}
+)
+
+pkgInstall(pkgs)
+sapply(pkgs, library, character.only=TRUE, quietly =TRUE)
+```
+
+
+# What the Data Looks Like
+
+```{r Load Company Data}
+companyFile <- read.table("http://www.boardsandgender.com/data/data_companies.txt")
+names(companyFile) <- c("id", "orgNum", "name", "location")
+companyFile$inOslo <- ifelse(grepl("OSLO", companyFile$location),"Oslo", "Outside Oslo") # Create binary var for whether company is in Oslo
+
+```
+
+Here is the what the company data looks like. The variables are the company id, organization number, company name, and company location. I created an additional binary variable for whether the company is in Oslo (the capital city of Norway) or not. There 384 companies in total.
+```{r View Company Data, echo = FALSE}
+head(companyFile)
+```
+
+
+Here is what the individual data looks like. There are 5,767 individuals who have served on the board of at least 1 company over the period in question. The data shows the individual id, the individual name, and their gender (male = 1, female = 2). Note that this information is publically available.
+```{r Load in People Data}
+peopleFile <- read.table("http://www.boardsandgender.com/data/data_people.txt", header = TRUE)
+head(peopleFile)
+```
+
+# Example - Company Graph for 1 month
+
+There are 112 csv files for each month from May 2002 to Aug 2011 that show the directors currently serving each company. These are the files I will use to create the graphs. As an example I will demonstrate the process of preparing the data and creating the graph objects for just 1 month **(May 2002)**.
+
+
+```{r Monthly files}
+compMay2002 <- read.table("http://www.boardsandgender.com/data/net2m/net2m_2002-05-01.txt")
+names(compMay2002) <- c("id1", "id2")
+head(compMay2002)
+```
+
+The variable named **id1** is the company id and the one named **id2** is the director id. Directors 1696 and	4951 were serving on the board of company 1 at the end of May 2002.
+
+
+### Processing the Data
+
+The igraph package has a powerful function called `graph_from_data_frame` that takes an R dataframe (table) and turns it into a _graph object_ . The function takes as its arguments a dataframe of the nodes and a dataframe of the edges. Since the companies are our nodes, we can use the companies file as our nodes dataframe. The edge dataframe should consist of two variables. If there is a connection between company 20 and comapany 25,  then the value in column 1 is 20 and the corresponding value in column 2 is 25. Since the edge is undirected the order doesn't matter.
+
+We start out by finding the directors who sit on more than 1 board, and then keep only those directors in the compMay2002 dataframe. There are 95 directors who sat on more than 1 board in May 2002.
+
+```{r Directors in more that 1 board}
+moreThanOneboard <- unique(compMay2002[duplicated(compMay2002$id2), "id2"]) # 95 directors in more thn 1 board
+
+compEdges <- compMay2002[compMay2002$id2 %in% moreThanOneboard,]
+
+```
+
+Then for each such director we take all the unique pairwise combinations of the boards they're on and add them to our edge dataframe.
+```{r Create Edge Dataframe}
+edgeDF <- data.frame(comp1 = as.numeric(), comp2 = as.numeric())
+for(j in unique(compEdges$id2)){
+  pairwiseMat <- combn(compEdges[compEdges$id2 == j, "id1"], 2)
+  
+  for(col in 1:ncol(pairwiseMat)){
+    edgeDF <- rbind(edgeDF, pairwiseMat[,col])
+  }
+}
+
+names(edgeDF) <- c("compID1", "compID2")
+```
+
+```{r, echo = FALSE}
+cat(paste("\nThere are", nrow(edgeDF), "edges in total\n"))
+```
+
+## Example Graphs
+
+**I created graphs based on the first month (1/112) just to get a sense of what the structure looks like.** 
+
+
+### Create first Graph (May 2002)
+
+```{r First Graph}
+companiesMay2002 <- graph_from_data_frame(d = edgeDF, vertices = companyFile, directed = F)
+plot.igraph(companiesMay2002, edge.width = 1.2, edge.color = "black", vertex.color="cornflowerblue", vertex.size = 4, vertex.label=NA)
+```
+
+**The first graph is not very interesting most companies are not connected to any other company. This is something that will be resolved later when we allow connections across the entire 9 year period.**
+
+
+
+### Create Second Graph (May 2002)
+
+**We can color the nodes/companies based on their locations  to make the graph more informative.**
+
+```{r Second Graph}
+# Generate colors based on company location:
+colrs <- c("tomato", "gold")
+V(companiesMay2002)$color <- colrs[as.factor(V(companiesMay2002)$inOslo)]
+
+V(companiesMay2002)$degree <- degree(companiesMay2002)
+
+plot.igraph(companiesMay2002, edge.width = 1.2, edge.color = "black", vertex.label=NA, layout=layout_with_fr, vertex.size = 4, main = "May 2002 - Shared Directors Graph (all)")
+
+legend(x=-1.5, y=-1.1, c("Oslo","Outside Oslo"), pch=21,
+       col="#777777", pt.bg=colrs, pt.cex=2, cex=.8, bty="n", ncol=1)
+
+```
+
+### Create third Graph (May 2002)
+
+**Since most of the nodes have a degree of zero we can exclude them from our graph to reduce clutter. **
+
+```{r Third Graph}
+# remove vertices with no edges
+companiesMay2002.sp <- delete_vertices(companiesMay2002, V(companiesMay2002)[degree < 1])
+
+companiesMay2002.sp <- simplify(companiesMay2002.sp, remove.multiple = T, remove.loops = T, edge.attr.comb=list(weight="sum","ignore"))
+
+# bestNodeSize <- sqrt(V(companiesMay2002.sp)$degree) * 2.5
+
+plot.igraph(companiesMay2002.sp, edge.width = 1.2, edge.color = "black", vertex.label = NA , layout=layout_with_fr, vertex.size = 4, main = "May 2002 - Shared Directors Graph (Degree > 0)")
+legend(x=-1.5, y=-1.1, c("Oslo","Outside Oslo"), pch=21,
+       col="#777777", pt.bg=colrs, pt.cex=1.2, cex=.8, bty="n", ncol=1)
+
+```
+
+
+### Measures and Metrics 
+
+We can compute various measures and metrics on the graph object we created. I chose the following measures for the reasons given below:
+
+* **Mean Degree:** Shows the average number of degrees (edges) for the vertices in the network. It will give a general sense of how connected the network is.
+
+* **Edge Density:** Is the number of edges in the network divided by the total number of possible edges. It gives a sense of how sparse our network is. Later on we'll want to see if this changes over time.
+
+* **Graph Diameter:** The longest shortest path in the between any two nodesin the network.
+
+* **Assortativity:** This is a measure of  a node's preference to connect with other nodes similar to its self. In this case, we consider assortativity by company location i.e. in Oslo vs outside Oslo.
+
+```{r Measures and Metrics, echo=F}
+cat("Mean Degree full Graph\n")
+mean(degree(companiesMay2002))
+
+cat("Mean Degree Truncated Graph\n")
+mean(degree(companiesMay2002.sp))
+
+cat("Companies with top 5 hubscores\n")
+topHub <- sort(hub.score(companiesMay2002)$vector, decreasing = T)[1:5]
+round(topHub, digits = 2)
+
+cat("Edge Density full Graph\n")
+edge_density(companiesMay2002, loops = FALSE) # 0.001931 (very sparse)
+
+cat("Edge Density Truncated Graph\n")
+edge_density(companiesMay2002.sp,loops = FALSE) # 0.01956 Still sparse but better
+
+cat("Diameter Truncated Graph\n")
+diameter(companiesMay2002.sp, directed=F, weights=NA) # 7
+
+cat("Assortativity of full Graph\n")
+# Companies in Capital vs those outside
+assortativity_nominal(companiesMay2002, factor(V(companiesMay2002)$inOslo), directed=F)
+
+cat("Assortativity of Truncated Graph\n")
+# Companies in Capital vs those outside
+assortativity_nominal(companiesMay2002.sp, factor(V(companiesMay2002.sp)$inOslo), directed=F)
+```
+
+# Section 1: Company Graphs (Metric Evolution over time)
+
+In this section we now create graph objects for the company nodes all 112 months and compute various graph measures for them. The objective is to be able to track how those metrics evolve over the 9 year period in our sample.
+
+Lets start by creating a vector for months/years so we can iteratively compute the measures we need for each period.
+
+```{r Vector of Months/Years}
+dateVec <- seq.Date(from = as.Date("2002-05-01"), to = as.Date("2011-08-01"), by = "month")
+dateVec <- dateVec[grepl("-12|-06", dateVec)] # every 6 months
+```
+
+**Now to compute the measures for the company graphs for all 112 months.**
+
+```{r Compute Measures for all Months}
+baseURL <- "http://www.boardsandgender.com/data/net2m/net2m"
+
+measureDF <- data.frame(date = as.numeric(), meanDegree = as.numeric(), diameter = as.numeric(),
+                        edgeDensity = as.numeric(), assort = as.numeric(), isTruncated = as.logical()) # output dataframe from loop
+
+
+
+# Loop over all months & compute measures
+for(mon in 1:length(dateVec)){
+  
+  if(file.exists("Evolution of Company Metrics 2002-2011.csv")){
+    # if measures already computed & in WD, load them in & skip loop
+    measureDF <- read.csv("Evolution of Company Metrics 2002-2011.csv")
+    break
+  }
+  
+  baseURL <- paste(baseURL, paste(dateVec[mon], ".txt", sep = ""), sep = "_")
+  compData <- read.table(baseURL) # read in director company data
+  names(compData) <- c("id1", "id2") # id1 =  companyid,id2 = director id
+  
+  moreThanOneboard <- unique(compData[duplicated(compData$id2), "id2"])
+  compEdge <- compData[compData$id2 %in% moreThanOneboard,]
+  
+  # computing edges
+  edgeDF <- data.frame(comp1 = as.numeric(), comp2 = as.numeric())
+  for(j in unique(compEdge$id2)){
+    pairwiseMat <- combn(compEdge[compEdge$id2 == j, "id1"], 2)
+    
+    for(col in 1:ncol(pairwiseMat)){
+      edgeDF[nrow(edgeDF) + 1, ] <- pairwiseMat[,col]
+      # edgeDF <- rbind(edgeDF, pairwiseMat[,col])
+    }
+  }
+  
+  
+  # CREATE GRAPHS
+  
+  companyInMonth <- companyFile %>% filter(id %in% edgeDF$comp1 | id %in% edgeDF$comp2)
+  
+  companiesAllMonths <- graph_from_data_frame(d = edgeDF, vertices = companyInMonth, directed = F)
+  companiesAllMonths <- simplify(companiesAllMonths, remove.multiple = T,
+                                       remove.loops = T, edge.attr.comb=list(weight="sum","ignore"))
+  
+  colrs <- c("tomato", "gold")
+  V(companiesAllMonths)$color <- colrs[as.factor(V(companiesAllMonths)$inOslo)]
+  V(companiesAllMonths)$degr <- degree(companiesAllMonths) # calc node degree
+  
+  # remove vertices with no edges
+  companiesAllMonths.trunc <- delete_vertices(companiesAllMonths, V(companiesAllMonths)[degr < 1])
+  
+  # Measures and Metrics Full Graph
+  meanDegreeFull <- mean(degree(companiesAllMonths))
+  diameterFull <- diameter(companiesAllMonths, directed = F, weights = NA)
+  edgeDensityFull <- edge_density(companiesAllMonths, loops = FALSE)
+  assortFull <- assortativity_nominal(companiesAllMonths, factor(V(companiesAllMonths)$inOslo), directed = F)
+  
+  measureDF[nrow(measureDF) + 1, ] <- c(as.character(dateVec[mon]), meanDegreeFull, diameterFull, edgeDensityFull, assortFull, FALSE)
+  
+  # Measures and Metrics Truncated Graph
+  meanDegree <- mean(degree(companiesAllMonths.trunc))
+  diameter <- diameter(companiesAllMonths.trunc, directed = F, weights = NA)
+  edgeDensity <- edge_density(companiesAllMonths.trunc, loops = FALSE)
+  assort <- assortativity_nominal(companiesAllMonths.trunc, factor(V(companiesAllMonths.trunc)$inOslo), directed = F)
+  
+  measureDF[nrow(measureDF) + 1, ] <- c(as.character(dateVec[mon]), meanDegree, diameter, edgeDensity, assort, TRUE)
+  
+  baseURL <- "http://www.boardsandgender.com/data/net2m/net2m" # reset baseURL
+  rm(meanDegree, meanDegreeFull, moreThanOneboard, edgeDensity, edgeDensityFull, diameterFull, diameter,col, colrs, edgeDF, compEdge, compData, pairwiseMat)
+}
+
+```
+
+
+**The output looks like this**
+
+```{r Metric Company Graph}
+measureDF[,2:5] <- sapply(measureDF[,2:5], as.numeric)
+measureDF[,c(2,4,5)] <- sapply(measureDF[,c(2,4,5)], round, digits = 5)
+measureDF$isTruncated <- as.logical(measureDF$isTruncated)
+measureDF$date <- as.Date(measureDF$date)
+
+write.csv(measureDF, file = "Evolution of Company Metrics 2002-2011.csv", row.names = FALSE, quote = FALSE)
+
+head(measureDF, 6)
+```
+
+Now we can use this output to visualize how these measures have changed over the 9 year period. To show all the measures on 1 graph I z-score standardized them. This shouldn't affect our intepretation since we are only interested in how the relative metrics change over the years.
+
+```{r Company time series, echo=FALSE, fig.height = 7.5, fig.width = 11}
+metricsTrunc <- subset(measureDF, isTruncated)
+metricsTrunc[,2:5] <- sapply(metricsTrunc[,2:5], scale)
+metricsTrunc <- metricsTrunc[,-6]
+metricsTrunc <- melt(metricsTrunc, id = c("date"))
+
+
+plot1 <- ggplot(metricsTrunc, aes(x = date, y = value, group = variable, color = variable)) +
+  geom_line(size = 1) +
+  xlab("Month") + 
+  ylab("Graph Metric (standard dev units)") +
+  theme_classic()+
+  theme(axis.line.x = element_line(color="black", size = 0.7),
+        axis.line.y = element_line(color="black", size = 0.7), axis.text = element_text(size = 11), 
+        axis.title = element_text(size = 13))+
+  ggtitle("Company Graph Measures (2002 - 2011)") +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", size = 18))
+  
+
+plot1 + scale_colour_discrete(name = "Graph Metrics", labels = c("Mean Degree", "Network Diameter", "Edge Density", "Assort by Region"))
+
+```
+
+There is a lot to unpack here. There's a lot of fluctuation but overall a few trends stand out. Mean degree has a noticable increasing trend over the 9 year period. So, overall the average number of edges between companies was increasing. The other noticable trend is the dramatic decline in the edge density, this suggests that the network became more sparse over time. This seems to conflict with the increase in the mean degree. One argument to account for this discrepency is that although the mean number of edges increased over the period, the number of listed companies increased even faster. Because of this the edge density which is the ratio of actual edges to possible edges actually declined. More formally, in a simple graph the maximum number of possible edges is given by $nC2 = n(n-1)/2$. So the maximum number of possible edges grows exponentially.
+
+There is no discernible pattern to Network Diameter and the assortativity seems stable after a large intial drop. 
+
+
+
+### Average Metrics Company Graph 2002 - 2011
+
+**We can gain more insight by taking a look at the average values of these metrics.**
+
+```{r Avg Company Metrics, echo=FALSE}
+
+cat("Average Mean Degree (2002 - 2011)\n")
+mean(measureDF[measureDF$isTruncated ,"meanDegree"]) # 2.859114
+
+cat("Average Edge Density (2002 - 2011)\n")
+mean(measureDF[measureDF$isTruncated ,"edgeDensity"]) # 0.01472632 (very sparse)
+
+cat("Average Diameter (2002 - 2011)\n")
+mean(measureDF[measureDF$isTruncated ,"diameter"]) 
+
+cat("Average Assortativity of (2002 - 2011)\n")
+# Companies in Capital vs those outside
+mean(measureDF[measureDF$isTruncated ,"assort"]) #0.162
+
+```
+
+
+* **Mean Degree:** On average each company shares directors with 2.86 other companies.
+
+* **Edge Density:** On average, the total number of edges in our network is 1.47% of the number of possible edges. This shows (as we expected) that the monthly networks are very sparse. Another way of putting this is, if you pick two nodes from our graph at random, the probability that they are connected is 1.47%.
+
+* **Graph Diameter:** The average longest shortest path in the between any two companies in the network is 13. This metric is not too useful because none of the 112 graphs is a connected graph.
+
+* **Assortativity:** We can think of the assortativity coefficient like a correlation coefficient i.e. it takes values between -1 and 1, where 1 is perfectly assortative and -1 is perfectly disassortative. The value we obtain of 0.162 suggests there is weak assortativity i.e. companies have a small preference for to connect (share directors) with companies that are  in the same location. This value is small as Norway is a fairly small country so travel time and expense between companies in different locations would only mildly inconvenience directors.
+
+```{r Clear Workspace}
+# remove all variables except companyFile,peopleFile, dateVec
+rm(list = ls()[! ls() %in% c("companyFile", "peopleFile", "dateVec")])
+
+```
+
+
+
+# Section 2: Company "Super Graph"
+
+One of the main insights from **Section 1** is just how sparse and unconnected the company graphs for individual months are. To remedy this problem we create a graph that simultaneously combines all 9 years (112 months). *There is an undirected edge between two companies if there exists an individual who has served on the boards of both companies over the nine year period.* I expect the final graph to have a much richer substructure.
+
+The first step is to create an edge dataframe for all 112 months.
+
+```{r Company Edges all months, echo = FALSE}
+dateVecYr <- seq.Date(from = as.Date("2002-05-01"), to = as.Date("2011-08-01"), by = "month")
+
+baseURL <- "http://www.boardsandgender.com/data/net2m/net2m"
+
+edgeDF <- data.frame(comp1 = as.numeric(), comp2 = as.numeric()) # aggregated edge dataframe
+
+
+for(mon in 1:length(dateVecYr)){
+  #iterating over 112 months (director-company datasets)
+  
+  if(file.exists("Edge List Company Super Graph (2002-2011).csv")){
+    # if edge list is in wd, read it in& skip loop
+    edgeDF <- read.csv("Edge List Company Super Graph (2002-2011).csv")
+    break
+      }
+  
+  baseURL <- paste(baseURL, paste(dateVecYr[mon], ".txt", sep = ""), sep = "_")
+  compData <- read.table(baseURL) # read in director company data
+  names(compData) <- c("id1", "id2") # id1 =  companyid,id2 = director id
+  
+  moreThanOneboard <- unique(compData[duplicated(compData$id2), "id2"])
+  compEdge <- compData[compData$id2 %in% moreThanOneboard,]
+  
+  # computing edges
+  
+  for(j in unique(compEdge$id2)){
+    pairwiseMat <- combn(compEdge[compEdge$id2 == j, "id1"], 2)
+    
+    for(col in 1:ncol(pairwiseMat)){
+      edgeDF[nrow(edgeDF) + 1, ] <- pairwiseMat[,col]
+      # edgeDF <- rbind(edgeDF, pairwiseMat[,col])
+    }
+  }
+  
+  # reset baseURL and other junk
+  baseURL <- "http://www.boardsandgender.com/data/net2m/net2m"
+  rm(j, col, compData, moreThanOneboard, compEdge)
+  
+}
+```
+
+
+The resulting dataframe has 40,504 edges but some of them are repeated e.g. a single director can be associated with multiple companies over multiple months so the edges between those companies become duplicated. Once we keep only the unique edges we are left with 1,423 edges (vs the 142 we had in the 1 month example).
+
+The code for this takes a while to run so the first time you run it it will save the final edge list to the working directory. On subsequent runs it just loads in that file and skips the loop. 
+
+The dataframe looks like this.
+
+```{r Remove duplicates}
+edgeDF <- unique(edgeDF) # drop duplicates
+edgeDF <- as.data.frame(edgeDF,row.names = 1:nrow(edgeDF))
+head(edgeDF)
+```
+
+
+```{r Save Full Copany Edges, echo = FALSE}
+# saves the computed company edges so we don't have to
+# recreate them everytime we run this
+
+write.csv(edgeDF, file = "Edge List Company Super Graph (2002-2011).csv", row.names = FALSE, quote = TRUE)
+```
+
+
+
+Now to plot the full Company Graph from 2002 - 2011
+
+```{r Full CompanyGraph, echo = FALSE, fig.height = 6.5, fig.width = 8.75}
+fullCompanyGraph <- graph_from_data_frame(d = edgeDF, vertices = companyFile, directed = FALSE)
+V(fullCompanyGraph)$id <- companyFile$id # ids were missing for automatic vertex attributes (adding them)
+
+colrs <- c("tomato", "gold")
+V(fullCompanyGraph)$color <- colrs[as.factor(V(fullCompanyGraph)$inOslo)]
+
+V(fullCompanyGraph)$degree <- degree(fullCompanyGraph)
+
+plot.igraph(fullCompanyGraph, edge.width = 1.2, edge.color = "black",
+            vertex.label=NA, layout=layout_with_fr, vertex.size = 4, main = "Full Company Graph (2002 - 2011)")
+
+legend(x=-1.5, y=-1.1, c("Oslo","Outside Oslo"), pch=21,
+       col="#777777", pt.bg=colrs, pt.cex=2, cex=.8, bty="n", ncol=1)
+```
+
+This graph is a lot less sparse than the graph for the individual months. It is still not a connected graph but the number of nodes with degree zero has fallen significantly. The `igraph` package has the allows us to add labels to the individual nodes and pick from between several network layouts but the current layout without labels was the most presentable one.
+
+**We can redraw the graph but only for nodes with degree greater than zero.**
+
+```{r Truncated CompanyGraph, echo = FALSE, fig.height = 6.5, fig.width = 8.75}
+
+fullCompanyGraph.trunc <- delete_vertices(fullCompanyGraph, V(fullCompanyGraph)[degree < 1])
+
+
+plot.igraph(fullCompanyGraph.trunc, edge.width = 1.2, edge.color = "black",
+            vertex.label=NA, layout=layout_with_fr,
+            vertex.size = 4, main = "Truncated Company Graph (2002 - 2011)")
+
+legend(x=-1.5, y=-1.1, c("Oslo","Outside Oslo"), pch=21,
+       col="#777777", pt.bg=colrs, pt.cex=2, cex=.8, bty="n", ncol=1)
+
+```
+
+
+**Let us look at the metrics for this new graph.**
+
+
+### Metrics Full Company Graph 2002 - 2011
+
+**We can gain more insight by taking a look at the  values of these metrics in the aggregated graph.**
+
+```{r Company Metrics Super, echo=FALSE}
+
+cat("Mean Degree in Oslo (2002 - 2011)\n")
+mean(V(fullCompanyGraph)$degree[V(fullCompanyGraph)$inOslo == "Oslo"])
+
+cat("Mean Degree outside Oslo (2002 - 2011)\n")
+mean(V(fullCompanyGraph)$degree[V(fullCompanyGraph)$inOslo != "Oslo"])
+
+cat("Edge Density (2002 - 2011)\n")
+edge_density(fullCompanyGraph, loops = FALSE) # 0.01935 (over 10 times denser than May 2002 graph)
+
+cat("Diameter (2002 - 2011)\n")
+diameter(fullCompanyGraph.trunc, directed = F, weights = NA)
+
+cat("Assortativity by Region (2002 - 2011)\n")
+assortativity_nominal(fullCompanyGraph, factor(V(fullCompanyGraph)$inOslo), directed = F) #0.162
+
+```
+
+
+* **Mean Degree:** On average each company in the capital Oslo shares directors with 7.78 other companies. Companies outside the capital average 7.08 connections.
+
+* **Edge Density:** On average, the total number of edges in our network is 1.94% of the number of possible edges. This shows that our **"Super graph"** is over 10 times denser than the example grapgh (May 2002) which has an edge density of only 0.19%. Another way of putting this is, if you pick two nodes from our graph at random, the probability that they are connected is 1.94%.
+
+* **Graph Diameter:** The longest shortest path in the between any two companies in the network is 7. This is about half of the average diameters for the monthly graphs (which was 13).
+
+* **Assortativity:** We can think of the assortativity coefficient like a correlation coefficient i.e. it takes values between -1 and 1, where 1 is perfectly assortative and -1 is perfectly disassortative. The value we obtain of 0.11 suggests there is weak assortativity i.e. companies have a small preference for to connect (share directors) with companies that are  in the same location. This value is small as Norway is a fairly small country so travel time and expense between companies in different locations would only mildly inconvenience directors.
+
+
+# Section 3: Gender "Super Graph"
+
+The goal here is to see if the Norwegian female board representation law passed in December 2003 had any effect on the network metrics of the director graph. To see this I create two graph objects: The first includes the 19 months before December 2003, and the second one includes the 19 months from December 2004 (I give the law about a year to start taking effect).
+
+The director data is already in an approriate form for the `graph_from_dataframe` function i.e. it is already an edge list. All we need to do is to stack the lists for the 19 months.
+
+
+```{r Date SetUp}
+rm(list = ls())
+preLawDateVec <- seq.Date(from = as.Date("2002-05-01"), to = as.Date("2003-11-01"), by = "month")
+
+postLawDateVec <- seq.Date(from = as.Date("2005-01-01"), to = as.Date("2006-07-01"), by = "month")
+
+directorBaseURL <- "http://www.boardsandgender.com/data/net1m/net1m"
+```
+
+
+
+```{r preLaw Director Network, echo = FALSE}
+
+preLawEdgeDF <- data.frame(dir1 = as.numeric(), dir2 = as.numeric())
+
+for(month in 1:length(preLawDateVec)){
+  
+  if(file.exists('Pre-Law Director Edge List.csv')){
+    # check wd for file, if it exists load it in & skip loop
+    preLawEdgeDF <- read.csv("Pre-Law Director Edge List.csv")
+    break
+  }
+  
+  directorBaseURL <- paste(directorBaseURL, paste(preLawDateVec[month], ".txt", sep = ""), sep = "_")
+  dirData <- read.table(directorBaseURL) # load in director edges month by month
+  names(dirData) <- c("dir1", "dir2")
+  
+  preLawEdgeDF <- rbind(preLawEdgeDF, unique(dirData)) # unique edge list
+  directorBaseURL <- "http://www.boardsandgender.com/data/net1m/net1m" # reset baseUrl
+  rm(dirData)
+  
+}
+```
+
+
+The **pre-Law** dataset has 12,290 edges and looks like this.
+```{r, echo=FALSE}
+preLawEdgeDF <- unique(preLawEdgeDF)
+preLawEdgeDF <- as.data.frame(preLawEdgeDF, row.names = 1:nrow(preLawEdgeDF)) # fix row numbers
+
+write.csv(preLawEdgeDF, file = "Pre-Law Director Edge List.csv", row.names = FALSE, quote = TRUE)
+
+head(preLawEdgeDF)
+```
+
+
+The **post-Law** dataset has 13,420 edges and looks like this.
+
+```{r postLaw Director Network, echo = FALSE}
+
+directorBaseURL <- "http://www.boardsandgender.com/data/net1m/net1m"
+postLawEdgeDF <- data.frame(dir1 = as.numeric(), dir2 = as.numeric())
+
+for(month in 1:length(postLawDateVec)){
+  
+  if(file.exists("Post-Law Director Edge List.csv")){
+    # check wd for file, if it exists load it in & skip loop
+    postLawEdgeDF <- read.csv("Post-Law Director Edge List.csv")
+    break
+  }
+  
+  directorBaseURL <- paste(directorBaseURL, paste(postLawDateVec[month], ".txt", sep = ""), sep = "_")
+  dirData2 <- read.table(directorBaseURL) # loadin director edges month by month
+  names(dirData2) <- c("dir1", "dir2")
+  
+  postLawEdgeDF <- rbind(postLawEdgeDF, unique(dirData2)) # unique edge list
+  directorBaseURL <- "http://www.boardsandgender.com/data/net1m/net1m" # reset baseUrl
+  rm(dirData2)
+  
+}
+
+# Clean up & save output df
+postLawEdgeDF <- unique(postLawEdgeDF)
+postLawEdgeDF <- as.data.frame(postLawEdgeDF, row.names = 1:nrow(postLawEdgeDF)) # fix row numbers
+
+write.csv(postLawEdgeDF, file = "Post-Law Director Edge List.csv", row.names = FALSE, quote = TRUE)
+
+head(postLawEdgeDF)
+
+```
+
+## Pre-Law Full Director Graph
+
+In this section I will look at the graph of directors for the 19 months before December 2003. I'll create the graph object, visualize it, and then compute various metrics.
+
+As was discussed earlier, the individual directors are the nodes, and there is an undirected edge between two directors if they sat on the board of the same company at any point in the 19 month period.
+
+```{r Reload People File,echo=FALSE}
+peopleFile <- read.table("http://www.boardsandgender.com/data/data_people.txt", header = TRUE)
+peopleFile$gender <- ifelse(peopleFile$gender == 1, "Male", "Female")
+
+```
+
+**Below is full graph containing of the directors before December 2003. Every director has a degree of at least one because  the minimum board size is two.**
+
+
+
+```{r Pre-Law Director Graph, echo=FALSE, fig.height = 6.5, fig.width = 8.75}
+
+peoplePreLaw <- peopleFile %>% filter(id %in% preLawEdgeDF$dir1 |id %in% preLawEdgeDF$dir2)
+
+directorPreLaw <- graph_from_data_frame(d = preLawEdgeDF, vertices = peoplePreLaw, directed = F)
+
+colrs <- c("cornflowerblue", "tomato")
+
+V(directorPreLaw)$color <- colrs[as.factor(V(directorPreLaw)$gender)]
+
+directorPreLaw <- simplify(directorPreLaw, remove.multiple = T, remove.loops = T, edge.attr.comb=list(weight="sum","ignore"))
+
+V(directorPreLaw)$degree <- degree(directorPreLaw)
+
+
+plot.igraph(directorPreLaw, edge.width = 0.6, edge.color = "black", vertex.label=NA, layout=layout_with_kk, vertex.size = 2.5, main = "Pre-Law Full Director Graph", edge.curved = FALSE)
+
+
+legend(x=-1.5, y=-1.1, c("Female","Male"), pch=21,
+       col="#777777", pt.bg=colrs, pt.cex=2, cex=.8, bty="n", ncol=1)
+```
+
+The structure of the graph is radically different from that of the companies where there was 1 major component and lots of smaller sub components. Here the directors break out into lots of unconnected subgraphs. We can see there are a lot less female directors than male ones.
+
+**The metrics will provide more information than the visual representation of the graph. The metric are based on the full (untruncated graph)**
+
+### Pre-Law Director Graph Metrics
+
+```{r Pre-Law Metrics,echo =FALSE}
+
+cat("Pecentage of Female Directors (before Dec 2003)\n")
+sum(peoplePreLaw$gender=="Female")/length(peoplePreLaw$gender)*100 # 11.14%
+
+
+cat("Mean Degree in Male (before Dec 2003)\n")
+mean(V(directorPreLaw)$degree[V(directorPreLaw)$gender == "Male"]) #  7.84
+
+cat("Mean Degree Female (before Dec 2003)\n")
+mean(V(directorPreLaw)$degree[V(directorPreLaw)$gender == "Female"]) # 8.91
+
+cat("Edge Density (before Dec 2003)\n")
+edge_density(directorPreLaw, loops = FALSE) # 0.005 
+
+cat("Diameter (before Dec 2003)\n")
+diameter(directorPreLaw, directed = F, weights = NA) # 15
+
+cat("Assortativity by Gender (before Dec 2003)\n")
+assortativity_nominal(directorPreLaw, factor(V(directorPreLaw)$gender), directed = F) # 0.078
+
+
+```
+
+
+* **Percentage of Women:** In the 19 months before the law was passed women made up 11.14% of the board members serving.
+
+
+* **Mean Degree:** The female mean degree is 7.84 and the male mean degree is 8.91. Again this makes sense as the paper by @RN1 shows that larger boards (from the biggest companies) more likely to include women. So, based on the way we defined our edges, women will have more edges on average.
+
+* **Edge Density:** On average, the total number of edges in our network is 0.5% of the number of possible edges.
+
+* **Graph Diameter:** The longest shortest path in the between any two companies in the network is 15. 
+
+* **Assortativity:**  The value we obtain of 0.078 suggests there is weak assortativity i.e. nodes have a small preference to connect with other nodes of the same type. 
+
+
+
+## Post-Law Full Director Graph
+
+In this section I will look at the graph of directors for the 19 months after December 2004. I waited a year after the passage of the law to allow the companies time to comply with it.
+
+
+**Below is full graph of the directors for the 19 months after December 2004. Every director has a degree of at least one because  the minimum board size is two.**
+
+
+
+```{r Post-Law Director Graph, echo=FALSE, fig.height = 6.5, fig.width = 8.75}
+
+peoplePostLaw <- peopleFile %>% filter(id %in% postLawEdgeDF$dir1 |id %in% postLawEdgeDF$dir2)
+
+directorPostLaw <- graph_from_data_frame(d = postLawEdgeDF, vertices = peoplePostLaw, directed = F)
+
+colrs <- c("cornflowerblue", "tomato")
+
+V(directorPostLaw)$color <- colrs[as.factor(V(directorPostLaw)$gender)]
+
+directorPostLaw <- simplify(directorPostLaw, remove.multiple = T, remove.loops = T, edge.attr.comb=list(weight="sum","ignore"))
+
+V(directorPostLaw)$degree <- degree(directorPostLaw)
+
+
+plot.igraph(directorPostLaw, edge.width = 0.6, edge.color = "black", vertex.label=NA, layout=layout_with_kk, vertex.size = 2.5, main = "Post-Law Full Director Graph")
+
+
+legend(x=-1.5, y=-1.1, c("Female","Male"), pch=21,
+       col="#777777", pt.bg=colrs, pt.cex=2, cex=.8, bty="n", ncol=1)
+```
+
+From the graphs alone there is no discenable difference between the Pre-Law graph and the Post-Law graph.
+
+### Post-Law Director Graph Metrics
+
+```{r Post-Law Metrics,echo =FALSE}
+
+cat("Pecentage of Female Directors (after Dec 2004)\n")
+sum(peoplePostLaw$gender=="Female")/length(peoplePostLaw$gender)*100 # 21.74%
+
+
+cat("Mean Degree in Male (after Dec 2004)\n")
+mean(V(directorPostLaw)$degree[V(directorPostLaw)$gender == "Male"]) #  7.10
+
+cat("Mean Degree Female (after Dec 2004)\n")
+mean(V(directorPostLaw)$degree[V(directorPostLaw)$gender == "Female"]) # 7.84
+
+cat("Edge Density (after Dec 2004)\n")
+edge_density(directorPostLaw, loops = FALSE) # 0.0039
+
+cat("Diameter (after Dec 2004)\n")
+diameter(directorPostLaw, directed = F, weights = NA) # 13
+
+cat("Assortativity by Gender (after Dec 2004)\n")
+assortativity_nominal(directorPostLaw, factor(V(directorPostLaw)$gender), directed = F) # 0.006501397
+
+
+```
+
+
+* **Percentage of Women:** In the 19 months before the law was passed women made up 21.14% of the board members serving. This is almost twice the value before the law was passed.
+
+
+* **Mean Degree:** The female mean degree is 7.84 and the male mean degree is 7.10. Again this makes sense as the paper by @RN1 shows that larger boards (from the biggest companies) are more likely to include women. So, based on the way we defined our edges, women will have more edges on average.
+
+* **Edge Density:** On average, the total number of edges in our network is 0.3% of the number of possible edges.
+
+* **Graph Diameter:** The longest shortest path in the between any two companies in the network is 13. 
+
+* **Assortativity:**  The value we obtain of 0.0065 suggests there is no assortativity i.e. nodes have a no preference to connect with other nodes of the same type. This is  dramatically different from what we saw in the graph before the law was passed where assortativity was 0.078
+
+
+# Conclusions
+
+1. **Section 1:** Company Graph Metrics Over time:
+    + Mean degree increases over the 9 year period but in a seeming contradiction edge density declines.
+    + Over the 9 years, the average mean degree is 2.86. The probability that two randomly connected nodes are connected is 1.47%.
+    + There is small but significant assortativity between companies in Oslo (the capital) and those outside it.
+    
+2. **Section 2:** Company “Super Graph" (all 9 years)
+    + The mean degree is higher in Oslo (7.78) than outside Oslo (7.08)
+    + Overall the network was less sparse than the ones for the individual months. Edge density was 0.019.
+    + We still see significant assortativity by Region (0.11)
+
+3. **Section 3:** Director Network (Impact of Law)
+    + Women have a higher mean degree both pre and post law. This is because larger boards are more likely to have female directors.
+    + The percentage of women on boards was 11.14% before the law was passed and 21.74% after. This suggests that the law improved the representation of women on boards.
+    + Assortativity by gender drops from 0.078 before the law to only 0.0065 after it. Again this suggests that directors are less assortative after the law was passed.
+    
+    
+
+
+# References
