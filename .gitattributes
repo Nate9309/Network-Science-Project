@@ -1,3 +1,2 @@
-*.Rmd linguist-detectable=true
-*.html linguist-detectable=false
-*.bib linguist-detectable=false
+*.html linguist-language=R
+*.Rmd linguist-language=R
