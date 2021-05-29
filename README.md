@@ -5,4 +5,4 @@ This is a project I did for my Network Science class. The goal was to make use o
 I used the [`igraph`](https://cran.r-project.org/web/packages/igraph/igraph.pdf) package in R to do the analysis. You can find a detailed tutorial of the igraph package [here](https://kateto.net/netscix2016.html)
 
 
-I wrote this like a tutorial to my future self so it might be a bit wordy. The Rmd file goes through the entire process from data prep to the final conclusions. The first run of the file will take a fair bit of time, after that the preped data is saved to your working directory and subsequent runs shouldn't take more than a minute.
+I wrote this like a tutorial to my future self so it might be a bit wordy. See the full html workbook [here](https://htmlpreview.github.io/?https://github.com/Nate9309/Network-Science-Project/blob/main/Corporate-Boards-Norway.html). The Rmd file goes through the entire process from data prep to the final conclusions. The first run of the file will take a fair bit of time, after that the preped data is saved to your working directory and subsequent runs shouldn't take more than a minute.
